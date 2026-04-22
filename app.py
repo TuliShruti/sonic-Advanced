@@ -7,6 +7,8 @@ import runpy
 
 import streamlit as st
 
+from sonic_dashboard.utils.session_state import initialize_pipeline_state
+
 
 ROOT = Path(__file__).resolve().parent
 PAGES_DIR = ROOT / "sonic_dashboard" / "pages"
@@ -25,6 +27,12 @@ st.set_page_config(
     layout="wide",
     page_icon="🔊",
 )
+
+initialize_pipeline_state()
+
+with st.sidebar:
+    st.write("QC Pipeline Status")
+    st.write("QC Done:", st.session_state.stage_qc_done)
 
 
 def _run_page(page_path: Path) -> None:
