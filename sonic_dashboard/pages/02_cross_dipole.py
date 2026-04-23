@@ -325,63 +325,146 @@ def cached_alford_rotation(comps, theta_step, t0_sample, win, depth_min, depth_m
     return FF_all, SS_all, theta_log, score_log
 
 
-@njit(cache=True, parallel=True)
-def stc_panel_numba(traces, dt, rec_spacing, slownesses, win):
-    nrec, ns = traces.shape
+@njit(cache=True)
+def _build_window_bounds(ns, win):
+    lo_idx = np.empty(ns, dtype=np.int64)
+    hi_idx = np.empty(ns, dtype=np.int64)
+
+    for time_idx in range(ns):
+        lo = time_idx - win
+        if lo < 0:
+            lo = 0
+
+        hi = time_idx + win
+        if hi > ns:
+            hi = ns
+
+        lo_idx[time_idx] = lo
+        hi_idx[time_idx] = hi
+
+    return lo_idx, hi_idx
+
+
+@njit(cache=True)
+def _build_delay_table(nrec, dt, rec_spacing, slownesses):
     ns_grid = len(slownesses)
+    delay_table = np.empty((ns_grid, nrec), dtype=np.int64)
 
-    offsets = np.empty(nrec, dtype=np.float64)
-    for rec_idx in range(nrec):
-        offsets[rec_idx] = rec_idx * rec_spacing
+    for slowness_idx in range(ns_grid):
+        delay_base = slownesses[slowness_idx] * rec_spacing / dt
+        for rec_idx in range(nrec):
+            delay_table[slowness_idx, rec_idx] = int(np.rint(delay_base * rec_idx))
 
+    return delay_table
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def stc_panel_numba(traces, delay_table, lo_idx, hi_idx):
+    nrec, ns = traces.shape
+    ns_grid = delay_table.shape[0]
     panel = np.zeros((ns_grid, ns), dtype=np.float64)
 
     for slowness_idx in prange(ns_grid):
-        s_val = slownesses[slowness_idx]
-        delays = np.empty(nrec, dtype=np.int64)
-        for rec_idx in range(nrec):
-            delays[rec_idx] = int(round(s_val * offsets[rec_idx] / dt))
-
-        corrected = np.zeros((nrec, ns), dtype=np.float64)
-        for rec_idx in range(nrec):
-            delay = delays[rec_idx]
-            if delay == 0:
-                for time_idx in range(ns):
-                    corrected[rec_idx, time_idx] = traces[rec_idx, time_idx]
-            elif 0 < delay < ns:
-                for time_idx in range(ns - delay):
-                    corrected[rec_idx, time_idx] = traces[rec_idx, time_idx + delay]
-            elif delay < 0:
-                shift = -delay
-                for time_idx in range(shift, ns):
-                    corrected[rec_idx, time_idx] = traces[rec_idx, time_idx - shift]
-
         for time_idx in range(ns):
-            lo = time_idx - win
-            if lo < 0:
-                lo = 0
-
-            hi = time_idx + win
-            if hi > ns:
-                hi = ns
-
             num = 0.0
             den = 0.0
 
-            for sample_idx in range(lo, hi):
+            for sample_idx in range(lo_idx[time_idx], hi_idx[time_idx]):
                 stack = 0.0
+
                 for rec_idx in range(nrec):
-                    stack += corrected[rec_idx, sample_idx]
+                    src_idx = sample_idx + delay_table[slowness_idx, rec_idx]
+                    value = 0.0
+                    if 0 <= src_idx < ns:
+                        value = traces[rec_idx, src_idx]
+
+                    stack += value
+                    den += value * value
 
                 num += stack * stack
-
-                for rec_idx in range(nrec):
-                    den += corrected[rec_idx, sample_idx] * corrected[rec_idx, sample_idx]
 
             if den > 0.0:
                 panel[slowness_idx, time_idx] = num / (nrec * den)
 
     return panel
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def stc_pick_one_numba(traces, delay_table, lo_idx, hi_idx, slownesses):
+    nrec, ns = traces.shape
+    ns_grid = delay_table.shape[0]
+    best_s_by_slowness = np.empty(ns_grid, dtype=np.float64)
+    best_peak_by_slowness = np.empty(ns_grid, dtype=np.float64)
+
+    for slowness_idx in prange(ns_grid):
+        best_peak = -1.0
+
+        for time_idx in range(ns):
+            num = 0.0
+            den = 0.0
+
+            for sample_idx in range(lo_idx[time_idx], hi_idx[time_idx]):
+                stack = 0.0
+
+                for rec_idx in range(nrec):
+                    src_idx = sample_idx + delay_table[slowness_idx, rec_idx]
+                    value = 0.0
+                    if 0 <= src_idx < ns:
+                        value = traces[rec_idx, src_idx]
+
+                    stack += value
+                    den += value * value
+
+                num += stack * stack
+
+            if den > 0.0:
+                peak = num / (nrec * den)
+                if peak > best_peak:
+                    best_peak = peak
+
+        best_s_by_slowness[slowness_idx] = slownesses[slowness_idx]
+        best_peak_by_slowness[slowness_idx] = best_peak
+
+    best_idx = 0
+    best_peak = best_peak_by_slowness[0]
+    for slowness_idx in range(1, ns_grid):
+        if best_peak_by_slowness[slowness_idx] > best_peak:
+            best_peak = best_peak_by_slowness[slowness_idx]
+            best_idx = slowness_idx
+
+    return best_s_by_slowness[best_idx], best_peak
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def stc_logs_numba(FF, SS, delay_table, lo_idx, hi_idx, slownesses):
+    nz = FF.shape[0]
+    dts_fast = np.empty(nz, dtype=np.float64)
+    dts_slow = np.empty(nz, dtype=np.float64)
+    peak_fast = np.empty(nz, dtype=np.float64)
+    peak_slow = np.empty(nz, dtype=np.float64)
+
+    for depth_idx in prange(nz):
+        s_f, pk_f = stc_pick_one_numba(
+            FF[depth_idx],
+            delay_table,
+            lo_idx,
+            hi_idx,
+            slownesses,
+        )
+        dts_fast[depth_idx] = s_f
+        peak_fast[depth_idx] = pk_f
+
+        s_s, pk_s = stc_pick_one_numba(
+            SS[depth_idx],
+            delay_table,
+            lo_idx,
+            hi_idx,
+            slownesses,
+        )
+        dts_slow[depth_idx] = s_s
+        peak_slow[depth_idx] = pk_s
+
+    return dts_fast, dts_slow, peak_fast, peak_slow
 
 
 def stc_panel_python(traces, dt, rec_spacing, slownesses, win):
@@ -428,40 +511,53 @@ def smooth(log_values, win=7):
 
 
 @st.cache_data(show_spinner=True)
-def cached_stc_logs(FF, SS, dt, rec_spacing, slownesses, win, depth_min, depth_max, use_numba):
+def run_stc_cached(FF, SS, params_tuple):
+    dt, rec_spacing, s_min, s_max, s_step, win, use_numba = params_tuple
+    slownesses = np.arange(s_min, s_max + s_step, s_step, dtype=np.float64)
     nz = FF.shape[0]
-    dts_fast = np.zeros(nz)
-    dts_slow = np.zeros(nz)
-    peak_fast = np.zeros(nz)
-    peak_slow = np.zeros(nz)
+    lo_idx, hi_idx = _build_window_bounds(int(FF.shape[2]), int(win))
+    delay_table = _build_delay_table(int(FF.shape[1]), float(dt), float(rec_spacing), slownesses)
 
-    panel_func = stc_panel_numba if use_numba else stc_panel_python
-
-    for depth_idx in range(int(depth_min), int(depth_max) + 1):
-        panel_f = panel_func(
-            FF[depth_idx].astype(np.float64),
-            float(dt),
-            float(rec_spacing),
+    if use_numba:
+        dts_fast, dts_slow, peak_fast, peak_slow = stc_logs_numba(
+            FF.astype(np.float64),
+            SS.astype(np.float64),
+            delay_table,
+            lo_idx,
+            hi_idx,
             slownesses,
-            int(win),
         )
-        s_f, _, pk_f = pick_slowness(panel_f, slownesses, dt)
-        dts_fast[depth_idx] = s_f
-        peak_fast[depth_idx] = pk_f
+    else:
+        dts_fast = np.full(nz, np.nan)
+        dts_slow = np.full(nz, np.nan)
+        peak_fast = np.full(nz, np.nan)
+        peak_slow = np.full(nz, np.nan)
 
-        panel_s = panel_func(
-            SS[depth_idx].astype(np.float64),
-            float(dt),
-            float(rec_spacing),
-            slownesses,
-            int(win),
-        )
-        s_s, _, pk_s = pick_slowness(panel_s, slownesses, dt)
-        dts_slow[depth_idx] = s_s
-        peak_slow[depth_idx] = pk_s
+        for depth_idx in range(nz):
+            panel_f = stc_panel_python(
+                FF[depth_idx].astype(np.float64),
+                float(dt),
+                float(rec_spacing),
+                slownesses,
+                int(win),
+            )
+            s_f, _, pk_f = pick_slowness(panel_f, slownesses, dt)
+            dts_fast[depth_idx] = s_f
+            peak_fast[depth_idx] = pk_f
 
-    vs_fast = 1e6 / np.where(dts_fast > 0, dts_fast, np.nan)
-    vs_slow = 1e6 / np.where(dts_slow > 0, dts_slow, np.nan)
+            panel_s = stc_panel_python(
+                SS[depth_idx].astype(np.float64),
+                float(dt),
+                float(rec_spacing),
+                slownesses,
+                int(win),
+            )
+            s_s, _, pk_s = pick_slowness(panel_s, slownesses, dt)
+            dts_slow[depth_idx] = s_s
+            peak_slow[depth_idx] = pk_s
+
+    vs_fast = 1e6 / dts_fast
+    vs_slow = 1e6 / dts_slow
     vs_fast = smooth(vs_fast)
     vs_slow = smooth(vs_slow)
 
@@ -545,6 +641,65 @@ def align_log(arr, depth_len):
         return out
 
     return arr[:depth_len]
+
+
+def fill_nan(arr):
+    arr = np.asarray(arr, dtype=float)
+    n = len(arr)
+    x = np.arange(n)
+    mask = ~np.isnan(arr)
+
+    if mask.sum() == 0:
+        return np.full(n, np.nan)
+
+    if mask.sum() == 1:
+        out = np.full(n, np.nan)
+        out[:] = arr[mask][0]
+        return out
+
+    return np.interp(x, x[mask], arr[mask])
+
+
+def masked(mask, val):
+    return np.where(mask, np.nan, val)
+
+
+def align_to_depth(arr, src_depth, target_depth):
+    """Interpolate arr (defined on src_depth) onto target_depth.
+
+    Unlike bare np.interp, values of target_depth that fall *outside* the
+    range of src_depth are set to NaN rather than being clamped to the edge
+    value.  This prevents elastic logs from appearing as flat lines beyond
+    the well-log depth range, which was the root cause of the truncated
+    elastic track in P7.
+    """
+    if arr is None or src_depth is None:
+        return np.full(len(target_depth), np.nan, dtype=float)
+
+    arr = np.asarray(arr, dtype=float)
+    src_depth = np.asarray(src_depth, dtype=float)
+    target_depth = np.asarray(target_depth, dtype=float)
+
+    if len(arr) != len(src_depth):
+        return np.full(len(target_depth), np.nan, dtype=float)
+
+    valid = ~np.isnan(arr)
+    if valid.sum() < 2:
+        return np.full(len(target_depth), np.nan, dtype=float)
+
+    src_d_valid = src_depth[valid]
+    arr_valid = arr[valid]
+
+    # Interpolate without clamping — use left=nan, right=nan so that
+    # target depths outside [src_d_valid.min(), src_d_valid.max()] are NaN.
+    out = np.interp(
+        target_depth,
+        src_d_valid,
+        arr_valid,
+        left=np.nan,
+        right=np.nan,
+    )
+    return out
 
 
 initialize_session_state()
@@ -827,15 +982,18 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
     )
     s_min = st.number_input("S_min (us/m)", value=300, key="P4_s_min")
     s_max = st.number_input("S_max (us/m)", value=2500, key="P4_s_max")
-    s_step = st.number_input("S_step (us/m)", value=4, key="P4_s_step")
+    s_step = st.number_input("S_step (us/m)", value=8, key="P4_s_step")
     win = st.number_input("Semblance half-window (samples)", value=40, key="P4_win")
+    nz = len(st.session_state["depth_full"])
     depth_min, depth_max = st.slider(
-        "Depth range to process",
+        "Depth range",
         0,
-        len(st.session_state["depth"]) - 1,
-        (0, len(st.session_state["depth_full"]) - 1),
+        nz - 1,
+        (0, nz - 1),
         key="P4_depth_range",
     )
+
+    slownesses = np.arange(s_min, s_max + s_step, s_step, dtype=np.float64)
     preview_depths = st.multiselect(
         "Preview depths (for STC panel)",
         options=list(range(len(st.session_state["depth_full"]))),
@@ -848,19 +1006,24 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
         clear_downstream("dts_fast")
         FF = st.session_state["FF"]
         SS = st.session_state["SS"]
-        slownesses = np.arange(s_min, s_max + s_step, s_step, dtype=np.float64)
 
-        dts_fast, dts_slow, vs_fast, vs_slow, peak_fast, peak_slow = cached_stc_logs(
+        dts_fast, dts_slow, vs_fast, vs_slow, peak_fast, peak_slow = run_stc_cached(
             FF,
             SS,
-            dt,
-            float(rec_spacing),
-            slownesses,
-            int(win),
-            int(depth_min),
-            int(depth_max),
-            bool(use_numba),
+            (
+                float(dt),
+                float(rec_spacing),
+                float(s_min),
+                float(s_max),
+                float(s_step),
+                int(win),
+                bool(use_numba),
+            ),
         )
+
+        depth = st.session_state["depth_full"]
+        assert len(vs_fast) == len(depth)
+        assert len(vs_slow) == len(depth)
 
         st.session_state["dts_fast"] = dts_fast
         st.session_state["dts_slow"] = dts_slow
@@ -876,14 +1039,15 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
         vs_slow = st.session_state["vs_slow"]
         peak_fast = st.session_state["peak_fast"]
         peak_slow = st.session_state["peak_slow"]
+        plot_slice = slice(int(depth_min), int(depth_max) + 1)
 
         col1, col2 = st.columns(2)
 
         with col1:
             fig, ax = plt.subplots(figsize=(4, 6))
             fig.set_dpi(100)
-            ax.plot(vs_fast, depth, label="Vs_fast")
-            ax.plot(vs_slow, depth, label="Vs_slow")
+            ax.plot(vs_fast[plot_slice], depth[plot_slice], label="Vs_fast")
+            ax.plot(vs_slow[plot_slice], depth[plot_slice], label="Vs_slow")
             ax.invert_yaxis()
             ax.legend()
             ax.set_title("Velocity Logs")
@@ -894,8 +1058,8 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
         with col2:
             fig, ax = plt.subplots(figsize=(4, 6))
             fig.set_dpi(100)
-            ax.plot(peak_fast, depth, label="fast")
-            ax.plot(peak_slow, depth, label="slow")
+            ax.plot(peak_fast[plot_slice], depth[plot_slice], label="fast")
+            ax.plot(peak_slow[plot_slice], depth[plot_slice], label="slow")
             ax.axvline(0.5, linestyle="--")
             ax.invert_yaxis()
             ax.legend()
@@ -907,18 +1071,34 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
         preview_depths_limited = preview_depths[:3]
         if preview_depths_limited:
             preview_columns = st.columns(len(preview_depths_limited))
-            slownesses = np.arange(s_min, s_max + s_step, s_step, dtype=np.float64)
-            panel_func = stc_panel_numba if use_numba else stc_panel_python
+            lo_idx, hi_idx = _build_window_bounds(
+                int(st.session_state["FF"].shape[2]),
+                int(win),
+            )
+            delay_table = _build_delay_table(
+                int(st.session_state["FF"].shape[1]),
+                float(dt),
+                float(rec_spacing),
+                slownesses,
+            )
 
             for col, preview_depth in zip(preview_columns, preview_depths_limited):
                 with col:
-                    panel = panel_func(
-                        st.session_state["FF"][preview_depth].astype(np.float64),
-                        dt,
-                        float(rec_spacing),
-                        slownesses,
-                        int(win),
-                    )
+                    if use_numba:
+                        panel = stc_panel_numba(
+                            st.session_state["FF"][preview_depth].astype(np.float64),
+                            delay_table,
+                            lo_idx,
+                            hi_idx,
+                        )
+                    else:
+                        panel = stc_panel_python(
+                            st.session_state["FF"][preview_depth].astype(np.float64),
+                            float(dt),
+                            float(rec_spacing),
+                            slownesses,
+                            int(win),
+                        )
                     fig, ax = plt.subplots(figsize=(4, 3))
                     fig.set_dpi(100)
                     ax.imshow(panel, aspect="auto", origin="lower")
@@ -1134,6 +1314,7 @@ with st.expander("P6 - VTI Stiffness & Elastic Properties", expanded=False):
     vp_mud = st.number_input("VP_MUD (m/s)", value=1500.0, key="P6_vp_mud")
     delta_v = st.number_input("DELTA_V", value=20.0, key="P6_delta")
     dtco_unit = st.selectbox("DTCO unit", ["us/ft", "us/m"], key="P6_dtco_unit")
+    st.session_state["vp_mud"] = float(vp_mud)
 
     well_depth = df["Depth_m"].values
     rho_b = df["RHOB"].values * 1000.0
@@ -1143,20 +1324,51 @@ with st.expander("P6 - VTI Stiffness & Elastic Properties", expanded=False):
     else:
         Vp = 1e6 / df["DTCO"].values
 
-    Vs_fast = np.interp(well_depth, depth, vs_fast)
-    Vs_slow = np.interp(well_depth, depth, vs_slow)
-    V_st = np.interp(well_depth, depth, vs_st)
+    if "VS_fast_m_per_s" in df.columns:
+        Vs_fast = df["VS_fast_m_per_s"].values
+    else:
+        Vs_fast = np.interp(well_depth, depth, vs_fast)
+
+    if "VS_slow_m_per_s" in df.columns:
+        Vs_slow = df["VS_slow_m_per_s"].values
+    else:
+        Vs_slow = np.interp(well_depth, depth, vs_slow)
+
+    vs_st_smooth = gaussian_filter1d(vs_st, sigma=5)
+    st.session_state["vs_st_smooth"] = vs_st_smooth
+
+    V_st = np.interp(well_depth, depth, st.session_state.get("vs_st_smooth"))
 
     near_mud = np.abs(V_st - vp_mud) < delta_v
-    V_st[near_mud] = np.nan
+    V_st_clean = V_st.copy()
+    V_st_clean[near_mud] = np.nan
 
-    denom = (1 / V_st**2) - (1 / vp_mud**2)
-    denom[np.abs(denom) < 1e-8] = np.nan
+    valid = ~np.isnan(V_st_clean)
+    if np.sum(valid) >= 2:
+        V_st_interp = np.interp(
+            well_depth,
+            well_depth[valid],
+            V_st_clean[valid],
+        )
+    else:
+        V_st_interp = np.full_like(well_depth, np.nan, dtype=float)
 
-    C33 = rho_b * Vp**2
-    C44 = rho_b * Vs_fast**2
-    C55 = rho_b * Vs_slow**2
-    C66 = rho_mud / denom
+    st.write("Stoneley valid %:", np.sum(~np.isnan(V_st_interp)) / len(V_st_interp))
+
+    eps = 1e-8
+    denom = (1 / V_st_interp**2) - (1 / vp_mud**2)
+    denom[np.abs(denom) < eps] = np.nan
+
+    bad_rho = (rho_b <= 0) | np.isnan(rho_b)
+    bad_vp = (Vp <= 0) | np.isnan(Vp)
+    bad_vs1 = (Vs_fast <= 0) | np.isnan(Vs_fast)
+    bad_vs2 = (Vs_slow <= 0) | np.isnan(Vs_slow)
+    bad_st = np.isnan(V_st_interp) | np.isnan(denom)
+
+    C33 = masked(bad_rho | bad_vp, rho_b * Vp**2)
+    C44 = masked(bad_rho | bad_vs1, rho_b * Vs_fast**2)
+    C55 = masked(bad_rho | bad_vs2, rho_b * Vs_slow**2)
+    C66 = masked(bad_st, rho_mud / denom)
 
     C13 = C33 - 2 * C44
     C11 = C13 + 2 * C66
@@ -1168,27 +1380,58 @@ with st.expander("P6 - VTI Stiffness & Elastic Properties", expanded=False):
     C55 /= 1e9
     C66 /= 1e9
 
+    C11[C11 < 0] = np.nan
+    C33[C33 < 0] = np.nan
+    C44[C44 < 0] = np.nan
+    C55[C55 < 0] = np.nan
+
     C12 = C11 - 2 * C66
 
-    E33 = C33 - (2 * (C13**2) / (C11 + C12))
-    nu_vert = C13 / (C11 + C12)
+    denom_vert = C11 + C12
+    denom_vert[np.abs(denom_vert) < 1e-6] = np.nan
+    denom_E = C11 * C33 - C13**2
+    denom_E[np.abs(denom_E) < 1e-6] = np.nan
+
+    E33 = C33 - (2 * (C13**2) / denom_vert)
+    nu_vert = C13 / denom_vert
 
     E11 = (
         ((C11 - C12) * (C11 * C33 - 2 * (C13**2) + C12 * C33))
-        / (C11 * C33 - C13**2)
+        / denom_E
     )
-    nu_horiz = (C12 * C33 - C13**2) / (C11 * C33 - C13**2)
+    nu_horiz = (C12 * C33 - C13**2) / denom_E
 
     E11[(E11 < 5) | (E11 > 200)] = np.nan
+    nu_horiz[(nu_horiz < -1) | (nu_horiz > 0.5)] = np.nan
+    nu_vert[(nu_vert < -1) | (nu_vert > 0.5)] = np.nan
 
-    st.session_state["C11"] = C11
-    st.session_state["C33"] = C33
-    st.session_state["C44"] = C44
-    st.session_state["C66"] = C66
-    st.session_state["E11"] = E11
-    st.session_state["E33"] = E33
-    st.session_state["nu_horiz"] = nu_horiz
-    st.session_state["nu_vert"] = nu_vert
+    print("Denom valid %:", np.sum(~np.isnan(denom)) / len(denom))
+    print("E11 valid %:", np.sum(~np.isnan(E11)) / len(E11))
+
+    # Re-interpolate every elastic array from well_depth onto depth_full so
+    # that P7 receives full-length arrays already aligned to the seismic
+    # depth axis.  This eliminates the depth-coordinate mismatch that caused
+    # the truncated elastic track in P7 when well_depth (Excel) and
+    # depth_full (binary) had different length / range.
+    depth_full = st.session_state["depth_full"]
+
+    def _to_full(arr_well):
+        return align_to_depth(arr_well, well_depth, depth_full)
+
+    st.session_state["C11"] = _to_full(C11)
+    st.session_state["C33"] = _to_full(C33)
+    st.session_state["C44"] = _to_full(C44)
+    st.session_state["C66"] = _to_full(C66)
+    st.session_state["E11"] = _to_full(E11)
+    st.session_state["E33"] = _to_full(E33)
+    st.session_state["nu_horiz"] = _to_full(nu_horiz)
+    st.session_state["nu_vert"] = _to_full(nu_vert)
+    # vti_depth now matches depth_full so align_to_depth in P7 is a no-op
+    # identity interpolation rather than a cross-coordinate remapping.
+    st.session_state["vti_depth"] = depth_full
+
+    st.write("Valid E11 %:", np.sum(~np.isnan(E11)) / len(E11))
+    st.write("Valid C66 %:", np.sum(~np.isnan(C66)) / len(C66))
 
     col1, col2 = st.columns(2)
 
@@ -1244,6 +1487,7 @@ with st.expander("P7 - Composite Log Viewer & Export", expanded=True):
         st.stop()
 
     nz = len(depth)
+    vti_depth = st.session_state.get("vti_depth")
 
     theta_source = st.session_state.get("theta")
     if theta_source is None:
@@ -1251,23 +1495,43 @@ with st.expander("P7 - Composite Log Viewer & Export", expanded=True):
 
     vs_fast = align_log(st.session_state.get("vs_fast"), nz)
     vs_slow = align_log(st.session_state.get("vs_slow"), nz)
-    vs_st = align_log(st.session_state.get("vs_st"), nz)
+    vs_st = align_to_depth(st.session_state.get("vs_st"), depth, depth)
     theta = align_log(theta_source, nz)
-    E11 = align_log(st.session_state.get("E11"), nz)
-    nu_h = align_log(st.session_state.get("nu_horiz"), nz)
+    E11 = align_to_depth(st.session_state.get("E11"), vti_depth, depth)
+    E33 = align_to_depth(st.session_state.get("E33"), vti_depth, depth)
+    C11 = align_to_depth(st.session_state.get("C11"), vti_depth, depth)
+    C33 = align_to_depth(st.session_state.get("C33"), vti_depth, depth)
+    C44 = align_to_depth(st.session_state.get("C44"), vti_depth, depth)
+    C66 = align_to_depth(st.session_state.get("C66"), vti_depth, depth)
+    nu_h = align_to_depth(st.session_state.get("nu_horiz"), vti_depth, depth)
     peak_f = align_log(st.session_state.get("peak_fast"), nz)
     peak_s = align_log(st.session_state.get("peak_slow"), nz)
 
-    st.write(
-        {
-            "depth": len(depth),
-            "vs_fast": len(vs_fast),
-            "vs_slow": len(vs_slow),
-            "vs_st": len(vs_st),
-            "theta": len(theta),
-            "E11": len(E11),
-        }
-    )
+    # Validate that all aligned logs are the same length as depth before
+    # doing any slicing.  A mismatch here means a previous panel wrote an
+    # array of the wrong length — surface it clearly rather than silently
+    # plotting misaligned data.
+    _shapes = {
+        "depth": len(depth),
+        "vs_fast": len(vs_fast),
+        "vs_slow": len(vs_slow),
+        "vs_st": len(vs_st),
+        "theta": len(theta),
+        "E11": len(E11),
+        "E33": len(E33),
+        "C11": len(C11),
+        "C33": len(C33),
+        "C44": len(C44),
+        "C66": len(C66),
+        "nu_h": len(nu_h),
+        "peak_f": len(peak_f),
+        "peak_s": len(peak_s),
+    }
+    print("P7 array lengths:", _shapes)
+    bad = {k: v for k, v in _shapes.items() if v != len(depth)}
+    if bad:
+        st.error(f"Array length mismatch vs depth ({len(depth)}): {bad}")
+        st.stop()
 
     col1, col2 = st.columns(2)
 
@@ -1284,10 +1548,23 @@ with st.expander("P7 - Composite Log Viewer & Export", expanded=True):
             key="P7_depth_zoom",
         )
 
-    d = depth[depth_min : depth_max + 1]
-    vf = vs_fast[depth_min : depth_max + 1] if vs_fast is not None else np.full(len(d), np.nan)
-    vs = vs_slow[depth_min : depth_max + 1] if vs_slow is not None else np.full(len(d), np.nan)
-    vst = vs_st[depth_min : depth_max + 1] if (show_stoneley and vs_st is not None) else None
+    # ── Depth zoom ────────────────────────────────────────────────────────
+    # Slice ALL arrays with the *same* integer index range so every track
+    # in the composite plot shares an identical depth axis.  Do NOT slice
+    # inside individual ax.plot() calls — that was the pattern that caused
+    # elastic tracks to appear vertically compressed.
+    sl = slice(depth_min, depth_max + 1)
+
+    d      = depth[sl]
+    vf     = vs_fast[sl]
+    vs_    = vs_slow[sl]
+    vst    = vs_st[sl]
+    th     = theta[sl]
+    pf     = peak_f[sl]
+    ps     = peak_s[sl]
+    _E11   = E11[sl]
+    _E33   = E33[sl]
+    _nu_h  = nu_h[sl]
 
     fig, axes = plt.subplots(
         nrows=1,
@@ -1297,34 +1574,32 @@ with st.expander("P7 - Composite Log Viewer & Export", expanded=True):
     )
     fig.set_dpi(100)
 
+    # Track 0 — Velocity
     axes[0].plot(vf, d, label="Vs_fast")
-    axes[0].plot(vs, d, label="Vs_slow")
-
-    if show_stoneley and vst is not None:
-        valid = ~np.isnan(vst)
-        axes[0].plot(vst[valid], d[valid], label="Stoneley")
-
+    axes[0].plot(vs_, d, label="Vs_slow")
+    if show_stoneley:
+        axes[0].plot(vst, d, label="Stoneley")
     axes[0].invert_yaxis()
     axes[0].set_title("Velocity")
-    axes[0].legend()
+    axes[0].legend(fontsize=7)
 
-    axes[1].plot(peak_f[depth_min : depth_max + 1], d, label="fast")
-    axes[1].plot(peak_s[depth_min : depth_max + 1], d, label="slow")
+    # Track 1 — Semblance QC
+    axes[1].plot(pf, d, label="fast")
+    axes[1].plot(ps, d, label="slow")
     axes[1].axvline(0.5, linestyle="--")
     axes[1].set_title("Semblance")
 
+    # Track 2 — Theta
     if show_theta:
-        axes[2].plot(theta[depth_min : depth_max + 1], d)
+        axes[2].plot(th, d)
     axes[2].set_title("Theta")
 
-    elastic_has_legend = False
-    axes[3].plot(E11[depth_min : depth_max + 1], d, label="E11")
-    elastic_has_legend = True
-    axes[3].plot(nu_h[depth_min : depth_max + 1], d, label="nu")
-    elastic_has_legend = True
+    # Track 3 — Elastic  (uses the same d — no separate masking)
+    axes[3].plot(_E11,  d, label="E11")
+    axes[3].plot(_E33,  d, label="E33")
+    axes[3].plot(_nu_h, d, label="nu")
     axes[3].set_title("Elastic")
-    if elastic_has_legend:
-        axes[3].legend()
+    axes[3].legend(fontsize=7)
 
     for ax in axes:
         ax.grid(True)
@@ -1339,7 +1614,12 @@ with st.expander("P7 - Composite Log Viewer & Export", expanded=True):
             "Vs_slow": vs_slow,
             "Vs_st": vs_st,
             "Theta": theta,
+            "C11": C11,
+            "C33": C33,
+            "C44": C44,
+            "C66": C66,
             "E11": E11,
+            "E33": E33,
             "nu": nu_h,
         }
     )
