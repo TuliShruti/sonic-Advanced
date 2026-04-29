@@ -182,17 +182,17 @@ def _plot_key_log_overview(df: pd.DataFrame) -> plt.Figure:
 
     depth = df["DEPTH_M"].to_numpy(dtype=float)
     fig, axes = plt.subplots(1, len(tracks), figsize=(22, 14), sharey=True)
-    fig.patch.set_facecolor("#1a1a2e")
+    fig.patch.set_facecolor("white")
 
     for ax, (col, unit, color, xlim, label) in zip(axes, tracks):
-        ax.set_facecolor("#1a1a2e")
+        ax.set_facecolor("white")
         vals = df[col].to_numpy(dtype=float).copy()
         ax.spines["bottom"].set_color("gray")
         ax.spines["top"].set_color("gray")
         ax.spines["left"].set_color("gray")
         ax.spines["right"].set_color("gray")
-        ax.tick_params(colors="white", labelsize=7)
-        ax.set_title(label, color="white", fontsize=8, fontweight="bold", pad=4)
+        ax.tick_params(colors="black", labelsize=7)
+        ax.set_title(label, color="black", fontsize=8, fontweight="bold", pad=4)
         if col == "RT":
             valid = vals > 0
             ax.semilogx(np.where(valid, vals, np.nan), depth, color=color, lw=0.6)
@@ -204,59 +204,66 @@ def _plot_key_log_overview(df: pd.DataFrame) -> plt.Figure:
         if col == "CALI" and "BS" in df.columns and not df["BS"].dropna().empty:
             bs_value = float(df["BS"].dropna().iloc[0])
             ax.axvline(bs_value, color="yellow", lw=1.2, ls="--", label=f"BS={bs_value:.2f}")
-            ax.legend(fontsize=6, labelcolor="white", framealpha=0.3)
+            ax.legend(fontsize=6, labelcolor="black", framealpha=0.3)
         ax.invert_yaxis()
-        ax.set_xlabel(unit, color="white", fontsize=7)
+        ax.set_xlabel(unit, color="black", fontsize=7)
+        ax.xaxis.label.set_color("black")
+        ax.yaxis.label.set_color("black")
+        ax.title.set_color("black")
         ax.xaxis.set_label_position("top")
         ax.xaxis.tick_top()
-        ax.grid(axis="y", color="#333355", lw=0.4)
+        ax.grid(True, color="lightgray", linestyle="--", linewidth=0.5)
 
-    axes[0].set_ylabel("Depth (m)", color="white", fontsize=9)
-    axes[0].yaxis.set_tick_params(labelcolor="white")
-    fig.suptitle("Key Log Quality Control Overview", color="white", fontsize=14, fontweight="bold", y=0.98)
+    axes[0].set_ylabel("Depth (m)", color="black", fontsize=9)
+    axes[0].yaxis.set_tick_params(labelcolor="black")
+    fig.suptitle("Key Log Quality Control Overview", color="black", fontsize=14, fontweight="bold", y=0.98)
     fig.tight_layout()
     return fig
 
 
 def _plot_sonic_crossplots(df: pd.DataFrame) -> plt.Figure:
     fig, axes = plt.subplots(1, 3, figsize=(16, 6))
-    fig.patch.set_facecolor("#1a1a2e")
+    fig.patch.set_facecolor("white")
 
     washout = df["CALI"] - df["BS"] if "BS" in df.columns else df["CALI"]
     scatter_kw = dict(s=2, alpha=0.5, cmap="plasma")
 
     for ax in axes:
-        ax.set_facecolor("#1a1a2e")
-        ax.tick_params(colors="white")
+        ax.set_facecolor("white")
+        ax.tick_params(colors="black")
+        ax.xaxis.label.set_color("black")
+        ax.yaxis.label.set_color("black")
+        ax.title.set_color("black")
+        ax.grid(True, color="lightgray", linestyle="--", linewidth=0.5)
         for spine in ax.spines.values():
             spine.set_color("gray")
 
     sc = axes[0].scatter(df["DTCO"], df["DTSM"], c=df["GR"], **scatter_kw)
-    axes[0].set_xlabel("DTCO (us/ft)", color="white")
-    axes[0].set_ylabel("DTSM (us/ft)", color="white")
-    axes[0].set_title("DTSM vs DTCO\n(colored by GR)", color="white", fontsize=10)
-    plt.colorbar(sc, ax=axes[0]).ax.yaxis.set_tick_params(labelcolor="white")
+    axes[0].set_xlabel("DTCO (us/ft)", color="black")
+    axes[0].set_ylabel("DTSM (us/ft)", color="black")
+    axes[0].set_title("DTSM vs DTCO\n(colored by GR)", color="black", fontsize=10)
+    plt.colorbar(sc, ax=axes[0]).ax.yaxis.set_tick_params(labelcolor="black")
     dtco_line = np.linspace(40, 140, 100)
     dtsm_castle = 1.16 * dtco_line + 36.6
     axes[0].plot(dtco_line, dtsm_castle, "r--", lw=1.5, label="Castagna Mudrock")
-    axes[0].legend(fontsize=8, labelcolor="white", framealpha=0.3)
+    axes[0].legend(fontsize=8, labelcolor="black", framealpha=0.3)
 
     sc2 = axes[1].scatter(df["DTCO"], df["VPVS"], c=washout, **scatter_kw)
-    axes[1].set_xlabel("DTCO (us/ft)", color="white")
-    axes[1].set_ylabel("Vp/Vs", color="white")
-    axes[1].set_title("Vp/Vs vs DTCO\n(colored by Washout)", color="white", fontsize=10)
+    axes[1].set_xlabel("DTCO (us/ft)", color="black")
+    axes[1].set_ylabel("Vp/Vs", color="black")
+    axes[1].set_title("Vp/Vs vs DTCO\n(colored by Washout)", color="black", fontsize=10)
     axes[1].set_ylim(1.3, 3.6)
-    plt.colorbar(sc2, ax=axes[1]).ax.yaxis.set_tick_params(labelcolor="white")
+    plt.colorbar(sc2, ax=axes[1]).ax.yaxis.set_tick_params(labelcolor="black")
     axes[1].axhline(1.5, color="yellow", lw=1, ls="--", label="VpVs=1.5")
-    axes[1].legend(fontsize=8, labelcolor="white", framealpha=0.3)
+    axes[1].legend(fontsize=8, labelcolor="black", framealpha=0.3)
 
     sc3 = axes[2].scatter(df["RHOB"], df["DTCO"], c=df["GR"], **scatter_kw)
-    axes[2].set_xlabel("RHOB (g/cc)", color="white")
-    axes[2].set_ylabel("DTCO (us/ft)", color="white")
-    axes[2].set_title("DTCO vs RHOB\n(colored by GR)", color="white", fontsize=10)
-    plt.colorbar(sc3, ax=axes[2]).ax.yaxis.set_tick_params(labelcolor="white")
+    axes[2].set_xlabel("RHOB (g/cc)", color="black")
+    axes[2].set_ylabel("DTCO (us/ft)", color="black")
+    axes[2].set_title("DTCO vs RHOB\n(colored by GR)", color="black", fontsize=10)
+    plt.colorbar(sc3, ax=axes[2]).ax.yaxis.set_tick_params(labelcolor="black")
 
-    fig.suptitle("Sonic Cross-Plot QC", color="white", fontsize=13, fontweight="bold")
+    fig.suptitle("Sonic Cross-Plot QC", color="black", fontsize=13, fontweight="bold")
     fig.tight_layout()
     return fig
 
@@ -280,27 +287,30 @@ def _plot_qc_flags(df: pd.DataFrame, flags: pd.DataFrame) -> plt.Figure:
     depth = df["DEPTH_M"].to_numpy(dtype=float)
     n_samples = len(df)
     fig, axes = plt.subplots(1, len(available_specs) + 2, figsize=(26, 14), sharey=True)
-    fig.patch.set_facecolor("#1a1a2e")
+    fig.patch.set_facecolor("white")
 
     for ax in axes:
-        ax.set_facecolor("#1a1a2e")
-        ax.tick_params(colors="white")
+        ax.set_facecolor("white")
+        ax.tick_params(colors="black")
+        ax.xaxis.label.set_color("black")
+        ax.yaxis.label.set_color("black")
+        ax.title.set_color("black")
         for spine in ax.spines.values():
             spine.set_color("gray")
 
     axes[0].plot(df["DTCO"], depth, color="royalblue", lw=0.7)
     axes[0].set_xlim(40, 130)
-    axes[0].set_title("DTCO", color="white", fontsize=8)
-    axes[0].set_xlabel("us/ft", color="white", fontsize=7)
+    axes[0].set_title("DTCO", color="black", fontsize=8)
+    axes[0].set_xlabel("us/ft", color="black", fontsize=7)
     axes[0].xaxis.set_label_position("top")
     axes[0].xaxis.tick_top()
-    axes[0].set_ylabel("Depth (m)", color="white")
-    axes[0].yaxis.set_tick_params(labelcolor="white")
+    axes[0].set_ylabel("Depth (m)", color="black")
+    axes[0].yaxis.set_tick_params(labelcolor="black")
 
     axes[1].plot(df["DTSM"], depth, color="cyan", lw=0.7)
     axes[1].set_xlim(60, 250)
-    axes[1].set_title("DTSM", color="white", fontsize=8)
-    axes[1].set_xlabel("us/ft", color="white", fontsize=7)
+    axes[1].set_title("DTSM", color="black", fontsize=8)
+    axes[1].set_xlabel("us/ft", color="black", fontsize=7)
     axes[1].xaxis.set_label_position("top")
     axes[1].xaxis.tick_top()
 
@@ -319,11 +329,15 @@ def _plot_qc_flags(df: pd.DataFrame, flags: pd.DataFrame) -> plt.Figure:
                 )
         ax.set_xlim(0, 1)
         ax.set_xticks([])
-        ax.set_title(flag_name.replace("_", "\n"), color="white", fontsize=7, pad=3)
+        ax.set_title(flag_name.replace("_", "\n"), color="black", fontsize=7, pad=3)
 
     for ax in axes:
         ax.invert_yaxis()
-        ax.grid(axis="y", color="#333355", lw=0.3)
+        ax.tick_params(colors="black")
+        ax.xaxis.label.set_color("black")
+        ax.yaxis.label.set_color("black")
+        ax.title.set_color("black")
+        ax.grid(True, color="lightgray", linestyle="--", linewidth=0.5)
 
     patches = [Patch(facecolor=color, label=name) for name, color in available_specs]
     fig.legend(
@@ -331,11 +345,11 @@ def _plot_qc_flags(df: pd.DataFrame, flags: pd.DataFrame) -> plt.Figure:
         loc="lower center",
         ncol=min(5, len(available_specs)),
         fontsize=8,
-        labelcolor="white",
+        labelcolor="black",
         framealpha=0.3,
-        facecolor="#2a2a4a",
+        facecolor="white",
     )
-    fig.suptitle("QC Flag Analysis", color="white", fontsize=13, fontweight="bold", y=0.99)
+    fig.suptitle("QC Flag Analysis", color="black", fontsize=13, fontweight="bold", y=0.99)
     fig.tight_layout(rect=[0, 0.04, 1, 0.98])
     return fig
 
@@ -959,7 +973,7 @@ else:
             dtco_used = _as_1d_log(dtco)
             dtsm_used = _as_1d_log(dtsm)
 
-            _render_semblance_panel(depth, spr2, spr4, slowness)
+            _render_waveform_panel(wf, idx, selected_depth)
 
             st.divider()
             st.subheader("Window Selection")
@@ -994,7 +1008,7 @@ else:
 
                         st.pyplot(fig)
 
-            _render_waveform_panel(wf, idx, selected_depth)
+            _render_semblance_panel(depth, spr2, spr4, slowness)
             _render_velocity_picking_panel(depth, spr4)
             _render_velocity_comparison_panel(depth, spr4, dtco_used, dtsm_used)
             _render_intermediate_qc_panel(frame_data, depth, selected_file, selected_frame)
