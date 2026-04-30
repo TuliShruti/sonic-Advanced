@@ -152,8 +152,8 @@ def _plot_cycle_skipping(
     axs[1].set_title("DT")
     axs[1].set_xlabel(dt_ch)
 
-    axs[2].plot(df["DT_DEVIATION"], depth, color="#9467bd", linewidth=1.0, label="Deviation")
-    axs[2].axvline(spike_threshold, color="#d62728", linestyle="--", linewidth=1.0, label="Threshold")
+    axs[2].plot(df["DT_DEVIATION"], depth, color="#9467bd", linewidth=1.0)
+    axs[2].axvline(spike_threshold, color="#d62728", linestyle="--", linewidth=1.0)
     axs[2].set_title("DT Deviation")
     axs[2].set_xlabel("abs deviation")
 
@@ -168,10 +168,15 @@ def _plot_cycle_skipping(
         axs[3].text(1.04, mid_depth, f"Z{idx}", va="center", ha="left", fontsize=8)
 
     for ax in axs:
-        _shade_zones(ax, zone_intervals)
+        if ax is not axs[2]:
+            _shade_zones(ax, zone_intervals)
         ax.grid(True, linewidth=0.4, alpha=0.55)
         ax.tick_params(labelsize=8)
-        ax.legend(fontsize=7, loc="best")
+        if ax is not axs[2]:
+            ax.legend(fontsize=7, loc="best")
+
+    if axs[2].get_legend():
+        axs[2].get_legend().remove()
 
     axs[0].set_ylabel("Depth (m)")
     axs[0].invert_yaxis()
