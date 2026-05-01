@@ -1,0 +1,11 @@
+2026-05-01 04:42:27.867 
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+ui.hideSidebarNav IS NO LONGER SUPPORTED.
+
+ui.hideSidebarNav has been deprecated and replaced with client.showSidebarNavigation. It will be removed in a future version.
+
+Please update C:\Users\shrut\Sonic_Processing\.streamlit\config.toml.
+\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+2026-05-01 04:42:33.292 Did not auto detect external IP.
+Please go to https://docs.streamlit.io/ for debugging hints.
