@@ -16,8 +16,7 @@ PAGES_DIR = ROOT / "sonic_dashboard" / "pages"
 PAGE_SPECS = [
     ("01_monopole_dipole.py", "Monopole / Dipole"),
     ("02_cross_dipole.py", "Cross Dipole"),
-    ("03_cycle_skipping.py", "Cycle Skipping"),
-    ("04_outlier_detection.py", "Outlier Detection"),
+    ("03_cycle_skipping_and_outlier_detection.py", "Cycle Skipping and Outlier Detection"),
     ("05_prediction.py", "Prediction"),
 ]
 
