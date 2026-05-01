@@ -270,11 +270,13 @@ def _output_table(df: pd.DataFrame, dt_ch: str) -> pd.DataFrame:
 
 # ===== INITIALIZATION =====
 initialize_session_state()
-_hydrate_df_raw_from_session()
 
 # ===== CYCLE SKIPPING SECTION =====
 with st.container():
     st.title("Cycle Skipping")
+
+    if st.session_state.get("monopole_dipole_ran", False):
+        _hydrate_df_raw_from_session()
 
     if "df_raw" not in st.session_state or st.session_state.df_raw is None:
         with st.container():
@@ -295,6 +297,7 @@ with st.container():
                 st.session_state["raw_data"] = loaded_data
                 st.session_state["data"] = loaded_data
                 st.session_state["selected_file"] = uploaded_file.name
+                st.session_state["cycle_skipping_ran"] = False
 
     data = st.session_state.get("raw_data") or st.session_state.get("data")
     if ("df_raw" not in st.session_state or st.session_state.df_raw is None) and data:
@@ -341,8 +344,6 @@ with st.container():
         min_bad_run = st.slider("Minimum bad run", min_value=1, max_value=50, value=3, step=1)
         logic = st.selectbox("Combine logic", ["OR", "AND"])
 
-    st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns):,}")
-
     if st.button("Run Cycle Skipping Detection", type="primary"):
         with st.spinner("Detecting bad zones..."):
             df, zone_intervals, n_zones = detect_bad_zones(
@@ -358,6 +359,7 @@ with st.container():
             )
 
         st.session_state.df_qc = df
+        st.session_state["cycle_skipping_ran"] = True
         st.session_state.bad_mask = df["FLAG_BAD"]
         st.session_state.zone_intervals = zone_intervals
         st.session_state.cycle_skipping_summary = {
@@ -376,9 +378,15 @@ with st.container():
     zone_intervals = st.session_state.get("zone_intervals", [])
     summary = st.session_state.get("cycle_skipping_summary")
 
+    if not st.session_state.get("cycle_skipping_ran", False):
+        st.info("Upload data, choose inputs, and click 'Run Cycle Skipping Detection' to start.")
+        st.stop()
+
     if df_qc is None or "FLAG_BAD" not in df_qc.columns or summary is None:
         st.info("Run detection to generate FLAG_BAD and zone_intervals for Outlier Detection.")
         st.stop()
+
+    st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns):,}")
 
     total_bad = int(df_qc["FLAG_BAD"].sum())
     percent_bad = 100.0 * total_bad / len(df_qc) if len(df_qc) else 0.0

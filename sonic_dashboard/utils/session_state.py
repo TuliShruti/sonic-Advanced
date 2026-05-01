@@ -11,6 +11,10 @@ SESSION_DEFAULTS = {
     "selected_depth": None,
     "semblance_data": None,
     "prediction_results": None,
+    "cross_dipole_ran": False,
+    "monopole_dipole_ran": False,
+    "cycle_skipping_ran": False,
+    "prediction_ran": False,
 }
 
 

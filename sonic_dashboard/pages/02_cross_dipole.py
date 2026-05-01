@@ -717,6 +717,11 @@ with st.expander("P1 - Data Loading & QC", expanded=True):
     )
 
     if uploaded_files:
+        uploaded_names = tuple(sorted(uploaded_file.name for uploaded_file in uploaded_files))
+        if st.session_state.get("cross_dipole_uploaded_names") != uploaded_names:
+            st.session_state["cross_dipole_ran"] = False
+        st.session_state["cross_dipole_uploaded_names"] = uploaded_names
+
         for uploaded_file in uploaded_files:
             save_path = UPLOAD_DIR / uploaded_file.name
             with open(save_path, "wb") as handle:
@@ -729,7 +734,25 @@ with st.expander("P1 - Data Loading & QC", expanded=True):
         st.info(f"Upload all 4 files to proceed. Missing: {', '.join(missing_files)}")
         st.stop()
 
-    raw_components, raw_depth, raw_meta = load_components_from_disk()
+    if st.button("Run QC", type="primary", use_container_width=True):
+        raw_components, raw_depth, raw_meta = load_components_from_disk()
+        clear_downstream("components")
+        st.session_state["components"] = {
+            name: np.array(data, copy=True) for name, data in raw_components.items()
+        }
+        st.session_state["depth"] = raw_depth
+        if "depth_full" not in st.session_state:
+            st.session_state["depth_full"] = raw_depth
+        st.session_state["meta"] = raw_meta
+        st.session_state["cross_dipole_ran"] = True
+
+    if not st.session_state.get("cross_dipole_ran", False):
+        st.info("Upload data and click 'Run QC' to start.")
+        st.stop()
+
+    raw_components = st.session_state["components"]
+    raw_depth = st.session_state["depth"]
+    raw_meta = st.session_state["meta"]
     component_selection = st.selectbox("Component", COMPONENT_LABELS, key="P1_component")
     depth_idx = st.slider("Depth slider", 0, int(raw_meta["nz"]) - 1, 0, key="P1_depth_slider")
     receiver_idx = st.selectbox(
@@ -769,20 +792,6 @@ with st.expander("P1 - Data Loading & QC", expanded=True):
     )
     st.table(metadata_table)
 
-    if st.button("Store P1 Output", use_container_width=True):
-        clear_downstream("components")
-        st.session_state["components"] = {
-            name: np.array(data, copy=True) for name, data in raw_components.items()
-        }
-        st.session_state["depth"] = raw_depth
-        if "depth_full" not in st.session_state:
-            st.session_state["depth_full"] = raw_depth
-        st.session_state["meta"] = {
-            **raw_meta,
-            "component_selection": component_selection,
-        }
-        st.success("P1 output stored in session state.")
-
 if st.session_state.get("components") is None:
     st.stop()
 
@@ -808,7 +817,6 @@ with st.expander("P2 - Preprocessing", expanded=False):
         st.session_state["filt"] = filt_components
         st.session_state["norm"] = norm_components
         st.session_state["preprocessed"] = norm_components if normalize else filt_components
-        st.success("P2 output stored in session state.")
 
     if (
         st.session_state.get("raw") is not None
@@ -906,7 +914,6 @@ with st.expander("P3 - Alford Rotation", expanded=False):
         st.session_state["SS"] = SS_all
         st.session_state["theta_log"] = theta_log
         st.session_state["score_log"] = score_log
-        st.success("Alford rotation finished.")
 
     if "theta_log" in st.session_state or "FF" in st.session_state:
         with st.container():
@@ -1031,7 +1038,6 @@ with st.expander("P4 - STC (Slowness-Time Coherence)", expanded=False):
         st.session_state["vs_slow"] = vs_slow
         st.session_state["peak_fast"] = peak_fast
         st.session_state["peak_slow"] = peak_slow
-        st.success("STC logs computed.")
 
     if "vs_fast" in st.session_state:
         depth = st.session_state["depth_full"]
@@ -1219,7 +1225,6 @@ with st.expander("P5 - Stoneley Wave Processing", expanded=False):
         st.session_state["dts_st"] = dts_st_full
         st.session_state["vs_st"] = vs_st_full
         st.session_state["peak_sem_st"] = peak_st_full
-        st.success("Stoneley processing finished.")
 
     if "vs_st" in st.session_state:
         col1, col2 = st.columns(2)

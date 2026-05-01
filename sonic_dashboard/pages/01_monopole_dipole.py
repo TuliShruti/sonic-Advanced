@@ -1064,6 +1064,7 @@ with st.container():
         st.session_state["data"] = loaded_data
         st.session_state["selected_file"] = uploaded_file.name
         if previous_file != uploaded_file.name:
+            st.session_state["monopole_dipole_ran"] = False
             st.session_state["stage_qc_done"] = False
             st.session_state["qc_result"] = None
             st.session_state["cleaned_dtco"] = None
@@ -1082,9 +1083,10 @@ if data is None:
 if data is None:
     st.info("Upload a DLIS file above to begin.")
 else:
-    st.divider()
-    st.subheader("Data Summary")
-    st.dataframe(_build_data_summary(data), use_container_width=True)
+    if st.session_state.get("monopole_dipole_ran", False):
+        st.divider()
+        st.subheader("Data Summary")
+        st.dataframe(_build_data_summary(data), use_container_width=True)
 
     st.divider()
     st.subheader("Frame Selection")
@@ -1106,6 +1108,7 @@ else:
         )
         st.session_state["selected_frame"] = selected_frame
         if previous_frame is not None and previous_frame != selected_frame:
+            st.session_state["monopole_dipole_ran"] = False
             st.session_state["stage_qc_done"] = False
             st.session_state["qc_result"] = None
             st.session_state["cleaned_dtco"] = None
@@ -1127,9 +1130,6 @@ else:
         else:
             depth_raw = np.asarray(depth, dtype=np.float64)
             depth_m = depth_raw * 0.00254
-            st.write(
-                f"Depth range: {depth_m.min():.2f} m -> {depth_m.max():.2f} m"
-            )
 
             selected_depth = st.slider(
                 "Select Depth (m)",
@@ -1141,10 +1141,21 @@ else:
             idx = int(np.argmin(np.abs(depth_m - selected_depth)))
             selected_depth = depth_m[idx]
 
-            st.session_state.waveform = _build_qc_dataframe(frame_data, depth)
-
             dtco_used = _as_1d_log(dtco)
             dtsm_used = _as_1d_log(dtsm)
+
+            if st.button("Process Data", type="primary"):
+                st.session_state["monopole_dipole_ran"] = True
+                st.session_state.waveform = _build_qc_dataframe(frame_data, depth)
+
+            if not st.session_state.get("monopole_dipole_ran", False):
+                st.info("Upload data, select inputs, and click 'Process Data' to start.")
+                st.stop()
+
+            st.write(
+                f"Depth range: {depth_m.min():.2f} m -> {depth_m.max():.2f} m"
+            )
+            st.session_state.waveform = _build_qc_dataframe(frame_data, depth)
 
             _render_waveform_panel(wf, idx, selected_depth)
 

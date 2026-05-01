@@ -606,6 +606,18 @@ training_file = st.file_uploader("Upload training LAS file", type=["las"], key="
 if training_file is None:
     st.info("Upload a training LAS file to begin.")
 else:
+    previous_training_file = st.session_state.get("prediction_training_file_name")
+    if previous_training_file is not None and previous_training_file != training_file.name:
+        st.session_state["prediction_ran"] = False
+    st.session_state["prediction_training_file_name"] = training_file.name
+
+    if st.button("Process Data", type="primary"):
+        st.session_state["prediction_ran"] = True
+
+    if not st.session_state.get("prediction_ran", False):
+        st.info("Upload data and click 'Process Data' to start.")
+        st.stop()
+
     try:
         df_raw = load_las_dataframe(training_file.getvalue())
     except Exception as exc:
