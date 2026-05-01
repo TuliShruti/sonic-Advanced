@@ -10,6 +10,8 @@ import streamlit as st
 from matplotlib.patches import Patch
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import medfilt
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 from sonic_dashboard.loaders.dlis_loader import load_dlis
 from sonic_dashboard.processing.semblance_processing import build_slowness_axis
@@ -166,6 +168,173 @@ def _build_qc_dataframe(frame_data: dict, depth: np.ndarray) -> pd.DataFrame:
     qc_data["DEPTH_M"] = arrays["DEPTH_M"][:n_rows] if arrays["DEPTH_M"] is not None else np.arange(n_rows)
 
     return pd.DataFrame(qc_data)
+
+
+def _compute_notebook_qc_summary(df_in: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
+    df = df_in.copy()
+    df.replace(-999.25, np.nan, inplace=True)
+    for column in df.columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    if "VPVS" not in df.columns and {"DTCO", "DTSM"}.issubset(df.columns):
+        df["VPVS"] = df["DTSM"] / df["DTCO"]
+
+    required = [
+        "DTCO",
+        "DTSM",
+        "RHOB",
+        "NPHI",
+        "GR",
+        "CALI",
+        "RT",
+        "TENS",
+        "SNR2",
+        "DCI2",
+        "DCI4",
+        "VPVS",
+        "BS",
+    ]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise ValueError("Missing required QC columns: " + ", ".join(missing))
+
+    df = df.dropna(subset=required)
+    if df.empty:
+        raise ValueError("No valid rows remain after QC null removal.")
+
+    bs_value = float(df["BS"].iloc[0])
+    flags = pd.DataFrame(index=df.index)
+
+    flags["washout"] = (df["CALI"] - bs_value) > 2.0
+
+    tens_med = df["TENS"].median()
+    if pd.isna(tens_med) or tens_med == 0:
+        flags["poor_tension"] = False
+    else:
+        flags["poor_tension"] = (df["TENS"] - tens_med).abs() > 0.3 * tens_med
+
+    flags["low_snr"] = df["SNR2"] < 10.0
+
+    dtco_diff = df["DTCO"].diff().abs()
+    dtsm_diff = df["DTSM"].diff().abs()
+    flags["cycle_skip_co"] = dtco_diff > 5.0
+    flags["cycle_skip_sm"] = dtsm_diff > 10.0
+
+    flags["out_range_co"] = (df["DTCO"] < 38) | (df["DTCO"] > 180)
+    flags["out_range_sm"] = (df["DTSM"] < 60) | (df["DTSM"] > 350)
+    flags["vpvs_bad"] = ~df["VPVS"].between(1.4, 3.5)
+    flags["dci_qc"] = (df["DCI2"] == 1) | (df["DCI4"] == 1)
+
+    flags["bad_dtco"] = (
+        flags["washout"]
+        | flags["cycle_skip_co"]
+        | flags["out_range_co"]
+        | flags["low_snr"]
+        | flags["dci_qc"]
+    )
+    flags["bad_dtsm"] = (
+        flags["washout"]
+        | flags["cycle_skip_sm"]
+        | flags["out_range_sm"]
+        | flags["low_snr"]
+        | flags["dci_qc"]
+    )
+
+    feature_cols = [
+        "DTCO",
+        "DTSM",
+        "RHOB",
+        "NPHI",
+        "GR",
+        "CALI",
+        "RT",
+        "TENS",
+        "SNR2",
+        "DCI2",
+        "DCI4",
+        "VPVS",
+    ]
+    feat_df = df[feature_cols].copy()
+    feat_df["washout"] = (df["CALI"] - bs_value).clip(lower=0)
+    feat_df["dtco_diff"] = df["DTCO"].diff().abs().fillna(0)
+    feat_df["dtsm_diff"] = df["DTSM"].diff().abs().fillna(0)
+    feat_df["dtco_roll_std"] = df["DTCO"].rolling(5, center=True, min_periods=1).std().fillna(0)
+    feat_df["dtsm_roll_std"] = df["DTSM"].rolling(5, center=True, min_periods=1).std().fillna(0)
+    feat_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    feat_df.fillna(feat_df.median(), inplace=True)
+
+    scaled_features = StandardScaler().fit_transform(feat_df)
+    iso_model = IsolationForest(n_estimators=200, contamination=0.08, random_state=42)
+    flags["iso_anomaly"] = iso_model.fit_predict(scaled_features) == -1
+
+    flags["final_bad_dtco"] = flags["bad_dtco"] | flags["iso_anomaly"]
+    flags["final_bad_dtsm"] = flags["bad_dtsm"] | flags["iso_anomaly"]
+
+    summary_order = [
+        "washout",
+        "poor_tension",
+        "low_snr",
+        "cycle_skip_co",
+        "cycle_skip_sm",
+        "out_range_co",
+        "out_range_sm",
+        "vpvs_bad",
+        "dci_qc",
+        "bad_dtco",
+        "bad_dtsm",
+    ]
+    n_rows = len(flags)
+    summary = pd.DataFrame(
+        [
+            {
+                "Flag": column,
+                "Count": int(flags[column].sum()),
+                "Percent": 100.0 * float(flags[column].mean()),
+            }
+            for column in summary_order
+        ]
+    )
+
+    final_counts = {
+        "Rows": n_rows,
+        "Isolation Forest anomalies": int(flags["iso_anomaly"].sum()),
+        "Final bad DTCO": int(flags["final_bad_dtco"].sum()),
+        "Final bad DTSM": int(flags["final_bad_dtsm"].sum()),
+    }
+    return summary, flags, final_counts
+
+
+def _render_notebook_qc_summary(qc_df: pd.DataFrame) -> None:
+    st.divider()
+    st.header("Sonic Log Quality Control & ML-Based Outlier Correction")
+
+    if qc_df.empty:
+        st.info("No QC dataframe is available for the final summary.")
+        return
+
+    try:
+        summary, flags, final_counts = _compute_notebook_qc_summary(qc_df)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+
+    st.subheader("QC Summary")
+    display_summary = summary.copy()
+    display_summary["Percent"] = display_summary["Percent"].map(lambda value: f"{value:.1f}%")
+    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+    rows = final_counts["Rows"]
+    iso_count = final_counts["Isolation Forest anomalies"]
+    dtco_count = final_counts["Final bad DTCO"]
+    dtsm_count = final_counts["Final bad DTSM"]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Isolation Forest anomalies", f"{iso_count}", f"{100.0 * iso_count / rows:.1f}%")
+    col2.metric("Final bad DTCO", f"{dtco_count}", f"{100.0 * dtco_count / rows:.1f}%")
+    col3.metric("Final bad DTSM", f"{dtsm_count}", f"{100.0 * dtsm_count / rows:.1f}%")
+
+    with st.expander("QC flag rows"):
+        st.dataframe(flags.astype(int), use_container_width=True)
 
 
 def _plot_key_log_overview(df: pd.DataFrame) -> plt.Figure:
@@ -1016,3 +1185,4 @@ else:
             st.markdown("---")
             st.header("QC & Correction")
             _render_qc_panel(frame_data, depth, selected_file, selected_frame)
+            _render_notebook_qc_summary(st.session_state.waveform)
