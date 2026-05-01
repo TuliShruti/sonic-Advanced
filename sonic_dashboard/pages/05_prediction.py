@@ -368,8 +368,8 @@ def _plot_actual_predicted_log_track(prediction_df, y_pred, model_type, measured
         xaxis_title=f"{TARGET_COL} (us/ft)",
         yaxis_title="Depth (ft)",
         yaxis_autorange="reversed",
-        height=700,
-        width=500,
+        height=850,
+        width=520,
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(color="#111827", size=12),
@@ -674,7 +674,7 @@ else:
         _clear_prediction_model_state()
         st.info("The previous model used an older feature pipeline. Please train the model again.")
 
-    with st.expander("Notebook pipeline row counts"):
+    with st.expander("pipeline row counts"):
         st.dataframe(
             pd.DataFrame(
                 training_data["row_counts"].items(),
@@ -809,4 +809,6 @@ else:
                         trained_model_type,
                         y_test,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    _, plot_col, _ = st.columns([1, 2, 1])
+                    with plot_col:
+                        st.plotly_chart(fig, use_container_width=False)

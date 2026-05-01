@@ -916,7 +916,7 @@ def _render_semblance_panel(
 
     slowness_axis = build_slowness_axis(selected_spr, slowness)
 
-    fig, ax = plt.subplots(figsize=(6, 10))
+    fig, ax = plt.subplots(figsize=(5.2, 11.5), dpi=120)
 
     ax.imshow(
         selected_spr,
@@ -933,8 +933,12 @@ def _render_semblance_panel(
     ax.set_xlabel("Slowness (µs/ft)")
     ax.set_ylabel("Depth (m)")
     ax.set_title("STC Semblance")
+    fig.tight_layout(pad=1.0)
 
-    st.pyplot(fig)
+    _, plot_col, _ = st.columns([1, 2, 1])
+    with plot_col:
+        st.pyplot(fig, use_container_width=False)
+    plt.close(fig)
 
 
 def _render_waveform_panel(wf: np.ndarray | None, idx: int, selected_depth: float) -> None:
